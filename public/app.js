@@ -66,6 +66,72 @@ function assignFile(input, file) {
   refreshState();
 }
 
+async function parseJsonResponse(response, fallbackMessage) {
+  if (response.ok) {
+    return response.json();
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  throw new Error(payload.error || fallbackMessage);
+}
+
+async function signDirect(data) {
+  const response = await fetch("/api/sign", {
+    method: "POST",
+    body: data
+  });
+  return parseJsonResponse(response, "Ký IPA thất bại.");
+}
+
+async function signChunked(data) {
+  const ipa = ipaInput.files[0];
+  const uploadId = crypto.randomUUID();
+  const chunkSize = 8 * 1024 * 1024;
+  const totalChunks = Math.ceil(ipa.size / chunkSize);
+
+  for (let index = 0; index < totalChunks; index += 1) {
+    const start = index * chunkSize;
+    const chunk = ipa.slice(start, Math.min(start + chunkSize, ipa.size));
+    const chunkData = new FormData();
+    chunkData.set("uploadId", uploadId);
+    chunkData.set("index", String(index));
+    chunkData.set("totalChunks", String(totalChunks));
+    chunkData.set("chunk", chunk, `${ipa.name}.part${index}`);
+
+    setStatus(`Đang upload IPA qua Cloudflare: ${index + 1}/${totalChunks}`);
+    const response = await fetch("/api/upload-chunk", {
+      method: "POST",
+      body: chunkData
+    });
+    await parseJsonResponse(response, "Upload chunk thất bại.");
+  }
+
+  const finalData = new FormData();
+  finalData.set("uploadId", uploadId);
+  finalData.set("totalChunks", String(totalChunks));
+  finalData.set("ipaName", ipa.name);
+  finalData.set("p12", data.get("p12"));
+  finalData.set("provision", data.get("provision"));
+  finalData.set("p12Password", data.get("p12Password") || "");
+  finalData.set("removeEmbedded", data.get("removeEmbedded") || "false");
+  finalData.set("bundleId", data.get("bundleId") || "");
+  finalData.set("bundleName", data.get("bundleName") || "");
+
+  setStatus("Đang ghép file và ký IPA.");
+  const response = await fetch("/api/sign-chunked", {
+    method: "POST",
+    body: finalData
+  });
+  return parseJsonResponse(response, "Ký IPA thất bại.");
+}
+
+function isCloudflareAccess() {
+  return (
+    location.protocol === "https:" &&
+    (location.hostname.endsWith(".trycloudflare.com") || location.hostname === "macmini.chillix.me")
+  );
+}
+
 document.querySelectorAll("[data-target]").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelector(`#${button.dataset.target}`).click();
@@ -113,17 +179,8 @@ form.addEventListener("submit", async (event) => {
     const data = new FormData(form);
     data.set("removeEmbedded", document.querySelector("#removeEmbedded").checked ? "true" : "false");
 
-    const response = await fetch("/api/sign", {
-      method: "POST",
-      body: data
-    });
-
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || "Ký IPA thất bại.");
-    }
-
-    const payload = await response.json();
+    const shouldChunk = isCloudflareAccess() && ipaInput.files[0].size > 50 * 1024 * 1024;
+    const payload = shouldChunk ? await signChunked(data) : await signDirect(data);
     showResult(payload);
     setStatus("Ký IPA xong. Quét QR bằng iPhone để cài OTA.", "success");
   } catch (error) {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 
 const rootDir = process.cwd();
 const pidFile = path.join(rootDir, ".cloudflare-local.pids");
@@ -52,6 +53,27 @@ await new Promise((resolve) => setTimeout(resolve, 800));
 for (const pid of pids) {
   if (isRunning(pid)) {
     killPid(pid, "SIGKILL");
+  }
+}
+
+const escapedRoot = rootDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const projectPatterns = [
+  `node scripts/start-cloudflare-local\\.js`,
+  `node server\\.js`,
+  `cloudflared tunnel --config ${escapedRoot}/\\.cloudflare-tunnel-config\\.yml`
+];
+
+for (const pattern of projectPatterns) {
+  try {
+    const output = execSync(`ps -axo pid,command | grep -E '${pattern}' | grep -v grep`, {
+      encoding: "utf8"
+    });
+    for (const line of output.split("\n")) {
+      const pid = Number(line.trim().split(/\s+/, 1)[0]);
+      if (pid) killPid(pid, "SIGKILL");
+    }
+  } catch {
+    // No matching process.
   }
 }
 

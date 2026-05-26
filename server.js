@@ -11,6 +11,7 @@ import QRCode from "qrcode";
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const signedDir = path.join(process.cwd(), "signed");
+const chunkDir = path.join(os.tmpdir(), "resign-ipa-chunks");
 const tunnelUrlFile = process.env.TUNNEL_URL_FILE ? path.resolve(process.env.TUNNEL_URL_FILE) : null;
 const upload = multer({
   dest: path.join(os.tmpdir(), "resign-ipa-uploads"),
@@ -18,10 +19,27 @@ const upload = multer({
     fileSize: 1024 * 1024 * 1024
   }
 });
+const chunkUpload = multer({
+  dest: path.join(os.tmpdir(), "resign-ipa-upload-chunks"),
+  limits: {
+    fileSize: 16 * 1024 * 1024
+  }
+});
 
-app.use(express.static(path.join(process.cwd(), "public")));
+app.use(
+  express.static(path.join(process.cwd(), "public"), {
+    etag: false,
+    lastModified: false,
+    setHeaders(res) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+    }
+  })
+);
 
 await fs.mkdir(signedDir, { recursive: true });
+await fs.mkdir(chunkDir, { recursive: true });
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -490,6 +508,86 @@ async function readSignedMetadata(id) {
   }
 }
 
+function isSafeUploadId(value) {
+  return /^[0-9a-f-]{36}$/i.test(String(value || ""));
+}
+
+function isSafeFileName(value) {
+  return typeof value === "string" && value.length > 0 && value === path.basename(value);
+}
+
+async function buildSignPayload(req, result, saved) {
+  const baseUrl = getBaseUrl(req);
+  const downloadUrl = `${baseUrl}/download/${saved.id}`;
+  const manifestUrl = `${baseUrl}/manifest/${saved.id}.plist`;
+  const installUrl = `itms-services://?action=download-manifest&url=${encodeURIComponent(manifestUrl)}`;
+  const qrDataUrl = await QRCode.toDataURL(installUrl, {
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: 280
+  });
+
+  return {
+    id: saved.id,
+    fileName: result.outputName,
+    bundleId: result.bundleId,
+    bundleVersion: result.bundleVersion,
+    title: result.title,
+    identityName: result.identityName,
+    p12IdentityName: result.p12IdentityName,
+    signingIdentityName: result.signingIdentityName,
+    signingIdentitySource: result.signingIdentitySource,
+    downloadUrl,
+    manifestUrl,
+    installUrl,
+    qrDataUrl,
+    httpsRequired: !manifestUrl.startsWith("https://"),
+    localhostUrl: /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/.test(baseUrl)
+  };
+}
+
+async function assembleChunkedIpa(uploadId, totalChunks, originalName) {
+  if (!isSafeUploadId(uploadId)) {
+    throw new Error("Upload ID không hợp lệ.");
+  }
+  if (!isSafeFileName(originalName)) {
+    throw new Error("Tên file IPA không hợp lệ.");
+  }
+
+  const total = Number(totalChunks);
+  if (!Number.isInteger(total) || total < 1 || total > 1000) {
+    throw new Error("Số lượng chunk không hợp lệ.");
+  }
+
+  const uploadDir = path.join(chunkDir, uploadId);
+  const assembledPath = path.join(os.tmpdir(), "resign-ipa-uploads", `${uploadId}.ipa`);
+  await fs.mkdir(path.dirname(assembledPath), { recursive: true });
+  await fs.rm(assembledPath, { force: true });
+
+  const output = fsSync.createWriteStream(assembledPath);
+  try {
+    for (let index = 0; index < total; index += 1) {
+      const chunkPath = path.join(uploadDir, `${index}.part`);
+      if (!(await pathExists(chunkPath))) {
+        throw new Error(`Thiếu chunk ${index + 1}/${total}.`);
+      }
+      await new Promise((resolve, reject) => {
+        const input = fsSync.createReadStream(chunkPath);
+        input.on("error", reject);
+        input.on("end", resolve);
+        input.pipe(output, { end: false });
+      });
+    }
+  } finally {
+    await new Promise((resolve) => output.end(resolve));
+  }
+
+  return {
+    path: assembledPath,
+    originalname: originalName
+  };
+}
+
 async function resignIpa({ ipa, p12, provision, password, removeEmbedded, bundleId, bundleName }) {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "resign-ipa-"));
   const keychainPassword = crypto.randomBytes(18).toString("hex");
@@ -655,36 +753,12 @@ app.post(
       });
 
       const saved = await saveSignedResult(result);
-      const baseUrl = getBaseUrl(req);
-      const downloadUrl = `${baseUrl}/download/${saved.id}`;
-      const manifestUrl = `${baseUrl}/manifest/${saved.id}.plist`;
-      const installUrl = `itms-services://?action=download-manifest&url=${encodeURIComponent(manifestUrl)}`;
-      const qrDataUrl = await QRCode.toDataURL(installUrl, {
-        errorCorrectionLevel: "M",
-        margin: 1,
-        width: 280
-      });
+      const payload = await buildSignPayload(req, result, saved);
 
       await cleanupKeychain(path.join(result.workDir, "signing.keychain-db"));
       await fs.rm(result.workDir, { recursive: true, force: true });
 
-      res.json({
-        id: saved.id,
-        fileName: result.outputName,
-        bundleId: result.bundleId,
-        bundleVersion: result.bundleVersion,
-        title: result.title,
-        identityName: result.identityName,
-        p12IdentityName: result.p12IdentityName,
-        signingIdentityName: result.signingIdentityName,
-        signingIdentitySource: result.signingIdentitySource,
-        downloadUrl,
-        manifestUrl,
-        installUrl,
-        qrDataUrl,
-        httpsRequired: !manifestUrl.startsWith("https://"),
-        localhostUrl: /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/.test(baseUrl)
-      });
+      res.json(payload);
     } catch (error) {
       if (result?.workDir) {
         await cleanupKeychain(path.join(result.workDir, "signing.keychain-db"));
@@ -696,6 +770,101 @@ app.post(
     } finally {
       const uploaded = Object.values(req.files || {}).flat();
       await Promise.all(uploaded.map((file) => fs.rm(file.path, { force: true })));
+    }
+  }
+);
+
+app.post("/api/upload-chunk", chunkUpload.single("chunk"), async (req, res) => {
+  try {
+    const uploadId = String(req.body.uploadId || "");
+    const index = Number(req.body.index);
+    const totalChunks = Number(req.body.totalChunks);
+
+    if (!req.file) {
+      res.status(400).json({ error: "Thiếu chunk upload." });
+      return;
+    }
+    if (!isSafeUploadId(uploadId)) {
+      res.status(400).json({ error: "Upload ID không hợp lệ." });
+      return;
+    }
+    if (!Number.isInteger(index) || index < 0 || !Number.isInteger(totalChunks) || index >= totalChunks) {
+      res.status(400).json({ error: "Index chunk không hợp lệ." });
+      return;
+    }
+
+    const uploadDir = path.join(chunkDir, uploadId);
+    await fs.mkdir(uploadDir, { recursive: true });
+    await fs.rename(req.file.path, path.join(uploadDir, `${index}.part`));
+    res.json({ ok: true, index });
+  } catch (error) {
+    if (req.file?.path) {
+      await fs.rm(req.file.path, { force: true });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post(
+  "/api/sign-chunked",
+  upload.fields([
+    { name: "p12", maxCount: 1 },
+    { name: "provision", maxCount: 1 }
+  ]),
+  async (req, res) => {
+    let result;
+    let assembledIpa;
+    const uploadId = String(req.body.uploadId || "");
+
+    try {
+      const p12 = req.files?.p12?.[0];
+      const provision = req.files?.provision?.[0];
+
+      if (!p12 || !provision) {
+        res.status(400).json({ error: "Cần chọn đủ file .p12 và .mobileprovision." });
+        return;
+      }
+
+      assembledIpa = await assembleChunkedIpa(
+        uploadId,
+        req.body.totalChunks,
+        String(req.body.ipaName || "app.ipa")
+      );
+
+      result = await resignIpa({
+        ipa: assembledIpa,
+        p12,
+        provision,
+        password: String(req.body.p12Password || ""),
+        removeEmbedded: req.body.removeEmbedded === "true",
+        bundleId: String(req.body.bundleId || "").trim(),
+        bundleName: String(req.body.bundleName || "").trim()
+      });
+
+      const saved = await saveSignedResult(result);
+      const payload = await buildSignPayload(req, result, saved);
+
+      await cleanupKeychain(path.join(result.workDir, "signing.keychain-db"));
+      await fs.rm(result.workDir, { recursive: true, force: true });
+
+      res.json(payload);
+    } catch (error) {
+      if (result?.workDir) {
+        await cleanupKeychain(path.join(result.workDir, "signing.keychain-db"));
+        await fs.rm(result.workDir, { recursive: true, force: true });
+      }
+      res.status(500).json({
+        error: error.message.replaceAll(process.cwd(), ".")
+      });
+    } finally {
+      const uploaded = Object.values(req.files || {}).flat();
+      await Promise.all(uploaded.map((file) => fs.rm(file.path, { force: true })));
+      if (assembledIpa?.path) {
+        await fs.rm(assembledIpa.path, { force: true });
+      }
+      if (isSafeUploadId(uploadId)) {
+        await fs.rm(path.join(chunkDir, uploadId), { recursive: true, force: true });
+      }
     }
   }
 );

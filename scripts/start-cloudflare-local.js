@@ -142,10 +142,15 @@ ingress:
 }
 
 const namedConfig = mode === "named" ? readNamedTunnelConfig() : null;
-const tunnel = namedConfig
-  ? (() => {
-      writeNamedTunnelConfig(namedConfig);
-      return start("cloudflared", [
+if (namedConfig) {
+  writeNamedTunnelConfig(namedConfig);
+}
+
+let tunnelRestartTimer = null;
+
+function startTunnel() {
+  const tunnel = namedConfig
+    ? start("cloudflared", [
         "tunnel",
         "--config",
         generatedConfigFile,
@@ -154,19 +159,31 @@ const tunnel = namedConfig
         "--protocol",
         "http2",
         "run"
+      ])
+    : start("cloudflared", [
+        "tunnel",
+        "--edge-ip-version",
+        "4",
+        "--protocol",
+        "http2",
+        "--url",
+        `http://127.0.0.1:${port}`
       ]);
-    })()
-  : start("cloudflared", [
-      "tunnel",
-      "--edge-ip-version",
-      "4",
-      "--protocol",
-      "http2",
-      "--url",
-      `http://127.0.0.1:${port}`
-    ]);
 
-writePidFile();
+  pipe("", tunnel.stdout, captureTunnelUrl);
+  pipe("", tunnel.stderr, captureTunnelUrl);
+  tunnel.on("exit", (code) => {
+    if (shuttingDown) return;
+    process.stdout.write(`cloudflared exited with code ${code ?? "unknown"}. Restarting in 3s...\n`);
+    tunnelRestartTimer = setTimeout(() => {
+      tunnelRestartTimer = null;
+      startTunnel();
+    }, 3000);
+  });
+  writePidFile();
+}
+
+startTunnel();
 
 function captureTunnelUrl(text) {
   const match = text.match(/https:\/\/[a-z0-9.-]+/i);
@@ -177,20 +194,13 @@ function captureTunnelUrl(text) {
   process.stdout.write(`\nCloudflare URL for OTA: ${url}\n\n`);
 }
 
-pipe("", tunnel.stdout, captureTunnelUrl);
-pipe("", tunnel.stderr, captureTunnelUrl);
-
-tunnel.on("exit", (code) => {
-  if (code !== 0 && code !== null) {
-    process.exitCode = code;
-  }
-  shutdown();
-});
-
 let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (tunnelRestartTimer) {
+    clearTimeout(tunnelRestartTimer);
+  }
 
   for (const child of children) {
     child.kill("SIGINT");
