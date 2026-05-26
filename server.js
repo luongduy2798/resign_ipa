@@ -588,6 +588,77 @@ async function assembleChunkedIpa(uploadId, totalChunks, originalName) {
   };
 }
 
+async function validateSigningInputs({ p12, provision, password }) {
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "resign-validate-"));
+  const keychainPassword = crypto.randomBytes(18).toString("hex");
+  const keychainPath = path.join(workDir, "signing.keychain-db");
+  const profilePlist = path.join(workDir, "profile.plist");
+  let originalKeychains = null;
+
+  try {
+    await run("/usr/bin/security", ["create-keychain", "-p", keychainPassword, keychainPath]);
+    await run("/usr/bin/security", ["set-keychain-settings", "-lut", "21600", keychainPath]);
+    await run("/usr/bin/security", ["unlock-keychain", "-p", keychainPassword, keychainPath]);
+    const p12Import = await importP12IntoKeychain(p12.path, keychainPath, password || "", workDir);
+    originalKeychains = await addKeychainToSearchList(keychainPath);
+    await run("/usr/bin/security", ["unlock-keychain", "-p", keychainPassword, keychainPath]);
+    await run("/usr/bin/security", [
+      "set-key-partition-list",
+      "-S",
+      "apple-tool:,apple:",
+      "-s",
+      "-k",
+      keychainPassword,
+      keychainPath
+    ]);
+
+    const cms = await run("/usr/bin/security", ["cms", "-D", "-i", provision.path]);
+    await fs.writeFile(profilePlist, cms.stdout);
+
+    const identityResult = await run("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning", keychainPath]);
+    let identity = parseIdentity(identityResult.stdout);
+    if (!identity) {
+      await p12Import.retryLegacyImport();
+      await run("/usr/bin/security", ["unlock-keychain", "-p", keychainPassword, keychainPath]);
+      await run("/usr/bin/security", [
+        "set-key-partition-list",
+        "-S",
+        "apple-tool:,apple:",
+        "-s",
+        "-k",
+        keychainPassword,
+        keychainPath
+      ]);
+      const legacyIdentityResult = await run("/usr/bin/security", [
+        "find-identity",
+        "-v",
+        "-p",
+        "codesigning",
+        keychainPath
+      ]);
+      identity = parseIdentity(legacyIdentityResult.stdout);
+      if (!identity) {
+        throw new Error(await describeImportedP12(keychainPath, legacyIdentityResult.stdout || identityResult.stdout));
+      }
+    }
+
+    identity = { ...identity, keychainPath };
+    await validateProvisionForSigning({ profilePlist, workDir, identity });
+
+    return {
+      ok: true,
+      identityName: identity.name,
+      identityHash: normalizeFingerprint(identity.hash)
+    };
+  } finally {
+    if (originalKeychains) {
+      await setUserKeychainList(originalKeychains).catch(() => {});
+    }
+    await cleanupKeychain(keychainPath);
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
+
 async function resignIpa({ ipa, p12, provision, password, removeEmbedded, bundleId, bundleName }) {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "resign-ipa-"));
   const keychainPassword = crypto.randomBytes(18).toString("hex");
@@ -764,6 +835,39 @@ app.post(
         await cleanupKeychain(path.join(result.workDir, "signing.keychain-db"));
         await fs.rm(result.workDir, { recursive: true, force: true });
       }
+      res.status(500).json({
+        error: error.message.replaceAll(process.cwd(), ".")
+      });
+    } finally {
+      const uploaded = Object.values(req.files || {}).flat();
+      await Promise.all(uploaded.map((file) => fs.rm(file.path, { force: true })));
+    }
+  }
+);
+
+app.post(
+  "/api/validate-signing",
+  upload.fields([
+    { name: "p12", maxCount: 1 },
+    { name: "provision", maxCount: 1 }
+  ]),
+  async (req, res) => {
+    try {
+      const p12 = req.files?.p12?.[0];
+      const provision = req.files?.provision?.[0];
+
+      if (!p12 || !provision) {
+        res.status(400).json({ error: "Cần chọn đủ file .p12 và .mobileprovision." });
+        return;
+      }
+
+      const result = await validateSigningInputs({
+        p12,
+        provision,
+        password: String(req.body.p12Password || "")
+      });
+      res.json(result);
+    } catch (error) {
       res.status(500).json({
         error: error.message.replaceAll(process.cwd(), ".")
       });

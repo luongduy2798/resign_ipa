@@ -83,6 +83,20 @@ async function signDirect(data) {
   return parseJsonResponse(response, "Ký IPA thất bại.");
 }
 
+async function validateSigning(data) {
+  const validateData = new FormData();
+  validateData.set("p12", data.get("p12"));
+  validateData.set("provision", data.get("provision"));
+  validateData.set("p12Password", data.get("p12Password") || "");
+
+  setStatus("Đang kiểm tra .p12 và .mobileprovision.");
+  const response = await fetch("/api/validate-signing", {
+    method: "POST",
+    body: validateData
+  });
+  return parseJsonResponse(response, "Kiểm tra .p12/.mobileprovision thất bại.");
+}
+
 async function signChunked(data) {
   const ipa = ipaInput.files[0];
   const uploadId = crypto.randomUUID();
@@ -178,6 +192,8 @@ form.addEventListener("submit", async (event) => {
   try {
     const data = new FormData(form);
     data.set("removeEmbedded", document.querySelector("#removeEmbedded").checked ? "true" : "false");
+
+    await validateSigning(data);
 
     const shouldChunk = isCloudflareAccess() && ipaInput.files[0].size > 50 * 1024 * 1024;
     const payload = shouldChunk ? await signChunked(data) : await signDirect(data);
