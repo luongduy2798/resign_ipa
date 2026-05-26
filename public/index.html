@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ký IPA</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <form id="signForm" class="panel">
+        <label id="dropZone" class="drop-zone" for="ipaInput">
+          <span class="upload-icon">↥</span>
+          <span id="ipaLabel">Kéo thả file .ipa vào đây hoặc nhấp để chọn file .ipa</span>
+          <input id="ipaInput" name="ipa" type="file" accept=".ipa" hidden />
+        </label>
+
+        <div class="grid">
+          <div class="file-field invalid" data-field="p12">
+            <span id="p12Name">Chọn file .p12</span>
+            <button type="button" data-target="p12Input">Chọn</button>
+            <input id="p12Input" name="p12" type="file" accept=".p12" hidden />
+          </div>
+
+          <label class="text-field invalid">
+            <input id="p12Password" name="p12Password" type="password" placeholder="Nhập mật khẩu .p12" />
+            <span class="state">!</span>
+          </label>
+
+          <div class="file-field invalid" data-field="provision">
+            <span id="provisionName">Chọn file .mobileprovision</span>
+            <button type="button" data-target="provisionInput">Chọn</button>
+            <input id="provisionInput" name="provision" type="file" accept=".mobileprovision" hidden />
+          </div>
+
+          <label class="check-field">
+            <span>Xóa embedded.mobileprovision</span>
+            <input id="removeEmbedded" name="removeEmbedded" type="checkbox" />
+          </label>
+
+          <label class="text-field valid">
+            <input id="bundleId" name="bundleId" type="text" placeholder="Nhập bundle identifier mới (không bắt buộc)" />
+            <span class="state">✓</span>
+          </label>
+
+          <label class="text-field valid">
+            <input id="bundleName" name="bundleName" type="text" placeholder="Nhập bundle name mới (không bắt buộc)" />
+            <span class="state">✓</span>
+          </label>
+        </div>
+
+        <button id="submitButton" class="sign-button" type="submit">
+          <span class="mark">〽</span>
+          <span id="buttonText">Sign</span>
+        </button>
+
+        <p id="status" class="status" role="status"></p>
+
+        <section id="resultPanel" class="result-panel" hidden>
+          <div class="qr-box">
+            <img id="qrImage" alt="QR OTA install" />
+          </div>
+          <div class="result-info">
+            <div>
+              <strong id="resultTitle">IPA đã ký</strong>
+              <span id="resultMeta"></span>
+            </div>
+            <div class="result-actions">
+              <a id="installLink" class="action-link primary" href="#">Cài OTA</a>
+              <a id="downloadLink" class="action-link" href="#">Tải IPA</a>
+            </div>
+            <p id="otaNote" class="ota-note"></p>
+          </div>
+        </section>
+      </form>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

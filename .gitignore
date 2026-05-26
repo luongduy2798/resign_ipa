@@ -1,0 +1,6 @@
+node_modules/
+signed/
+.DS_Store
+.cloudflare-tunnel-url
+.cloudflare-tunnel-config.yml
+.cloudflare-local.pids

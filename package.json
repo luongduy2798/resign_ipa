@@ -1,0 +1,16 @@
+{
+  "name": "resign-ipa-tool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "start:cloudflare": "node scripts/start-cloudflare-local.js",
+    "stop:cloudflare": "node scripts/stop-cloudflare-local.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.1.1",
+    "qrcode": "^1.5.4"
+  }
+}
