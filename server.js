@@ -232,6 +232,63 @@ async function extractEntitlements(profilePlist, outPath, teamId, bundleId) {
   }
 }
 
+function normalizeFingerprint(value) {
+  return String(value).replaceAll(":", "").trim().toUpperCase();
+}
+
+async function getProvisionCertificateFingerprints(profilePlist, workDir) {
+  const fingerprints = [];
+  const openssl = await findOpenSsl();
+  if (!openssl) return fingerprints;
+
+  for (let index = 0; index < 50; index += 1) {
+    const extracted = await run("/usr/bin/plutil", [
+      "-extract",
+      `DeveloperCertificates.${index}`,
+      "raw",
+      "-o",
+      "-",
+      profilePlist
+    ]).catch(() => null);
+    if (!extracted) break;
+
+    const certificatePath = path.join(workDir, `provision-cert-${index}.cer`);
+    await fs.writeFile(certificatePath, Buffer.from(extracted.stdout.trim(), "base64"));
+    const fingerprintResult = await run(openssl, [
+      "x509",
+      "-inform",
+      "DER",
+      "-in",
+      certificatePath,
+      "-noout",
+      "-fingerprint",
+      "-sha1"
+    ]).catch(() => null);
+    if (!fingerprintResult) continue;
+
+    const match = fingerprintResult.stdout.match(/Fingerprint=([A-F0-9:]+)/i);
+    if (match) {
+      fingerprints.push(normalizeFingerprint(match[1]));
+    }
+  }
+
+  return fingerprints;
+}
+
+async function validateProvisionForSigning({ profilePlist, workDir, identity }) {
+  const profileCerts = await getProvisionCertificateFingerprints(profilePlist, workDir);
+  const identityHash = normalizeFingerprint(identity.hash);
+  if (profileCerts.length && !profileCerts.includes(identityHash)) {
+    throw new Error(
+      [
+        "Provisioning profile không chứa certificate đang dùng để ký.",
+        `P12 certificate SHA1: ${identityHash}`,
+        `Profile certificates SHA1: ${profileCerts.join(", ")}`
+      ].join("\n")
+    );
+  }
+}
+
 function parseIdentity(findIdentityOutput) {
   const line = findIdentityOutput.split("\n").find((item) => /\)\s+[A-F0-9]{40}\s+".+"/.test(item));
 
@@ -519,6 +576,12 @@ async function resignIpa({ ipa, p12, provision, password, removeEmbedded, bundle
       (await plistValueOrDefault(infoPlist, "Print :CFBundleShortVersionString")) ||
       (await plistValueOrDefault(infoPlist, "Print :CFBundleVersion")) ||
       "1.0";
+
+    await validateProvisionForSigning({
+      profilePlist,
+      workDir,
+      identity
+    });
 
     const embeddedProfile = path.join(appDir, "embedded.mobileprovision");
     await fs.rm(embeddedProfile, { force: true });
