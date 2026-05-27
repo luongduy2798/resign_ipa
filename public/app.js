@@ -16,6 +16,8 @@ const resultTitle = document.querySelector("#resultTitle");
 const resultMeta = document.querySelector("#resultMeta");
 const installLink = document.querySelector("#installLink");
 const downloadLink = document.querySelector("#downloadLink");
+const installUrlInput = document.querySelector("#installUrlInput");
+const copyInstallUrlButton = document.querySelector("#copyInstallUrlButton");
 const otaNote = document.querySelector("#otaNote");
 
 function fileName(input, fallback) {
@@ -49,6 +51,8 @@ function showResult(payload) {
   resultMeta.textContent = [payload.bundleId, payload.bundleVersion].filter(Boolean).join(" · ");
   installLink.href = payload.installUrl;
   downloadLink.href = payload.downloadUrl;
+  installUrlInput.value = payload.installUrl;
+  copyInstallUrlButton.textContent = "Copy";
   const notes = ["Quét QR bằng Camera hoặc mở link Cài OTA trong Safari trên iPhone."];
   if (payload.localhostUrl) {
     notes.push("Không dùng localhost khi quét từ iPhone; hãy mở tool bằng IP LAN của máy Mac hoặc đặt PUBLIC_BASE_URL.");
@@ -57,6 +61,24 @@ function showResult(payload) {
     notes.push("OTA trên iPhone thường yêu cầu manifest và IPA qua HTTPS.");
   }
   otaNote.textContent = notes.join(" ");
+}
+
+async function copyInstallUrl() {
+  const value = installUrlInput.value;
+  if (!value) return;
+
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    installUrlInput.select();
+    document.execCommand("copy");
+    installUrlInput.blur();
+  }
+
+  copyInstallUrlButton.textContent = "Copied";
+  setTimeout(() => {
+    copyInstallUrlButton.textContent = "Copy";
+  }, 1500);
 }
 
 function assignFile(input, file) {
@@ -153,6 +175,8 @@ document.querySelectorAll("[data-target]").forEach((button) => {
     document.querySelector(`#${button.dataset.target}`).click();
   });
 });
+
+copyInstallUrlButton.addEventListener("click", copyInstallUrl);
 
 [ipaInput, p12Input, provisionInput, p12Password].forEach((field) => {
   field.addEventListener("change", refreshState);

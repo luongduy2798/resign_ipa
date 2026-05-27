@@ -288,6 +288,35 @@ body {
   color: #fff;
 }
 
+.install-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  gap: 8px;
+}
+
+.install-url-row input {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+}
+
+.copy-button {
+  height: 34px;
+  border: 1px solid var(--action);
+  background: #fff;
+  color: var(--action);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.copy-button:hover {
+  background: #eefbfd;
+}
+
 .ota-note {
   margin: 0;
   color: var(--muted);
