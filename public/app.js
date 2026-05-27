@@ -76,6 +76,7 @@ async function parseJsonResponse(response, fallbackMessage) {
 }
 
 async function signDirect(data) {
+  setStatus("Đang ký IPA.");
   const response = await fetch("/api/sign", {
     method: "POST",
     body: data
@@ -103,6 +104,7 @@ async function signChunked(data) {
   const chunkSize = 8 * 1024 * 1024;
   const totalChunks = Math.ceil(ipa.size / chunkSize);
 
+  setStatus(`Đang ký IPA : 0/${totalChunks}`);
   for (let index = 0; index < totalChunks; index += 1) {
     const start = index * chunkSize;
     const chunk = ipa.slice(start, Math.min(start + chunkSize, ipa.size));
@@ -112,7 +114,7 @@ async function signChunked(data) {
     chunkData.set("totalChunks", String(totalChunks));
     chunkData.set("chunk", chunk, `${ipa.name}.part${index}`);
 
-    setStatus(`Đang upload IPA qua Cloudflare: ${index + 1}/${totalChunks}`);
+    setStatus(`Đang ký IPA : ${index + 1}/${totalChunks}`);
     const response = await fetch("/api/upload-chunk", {
       method: "POST",
       body: chunkData
